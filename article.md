@@ -92,7 +92,7 @@ label_names = ['airplane', 'automobile', 'bird', 'cat', 'deer',
 n_rows, n_cols = 3, 5
 indices = np.random.choice(len(images), n_rows * n_cols, replace=False)
 
-fig, axes = plt.subplots(n_rows, n_cols, figsize=(2.5 * n_cols, 2.5 * n_rows))
+fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols, n_rows))
 
 for ax, idx in zip(axes.ravel(), indices):
     ax.imshow(images[idx])
@@ -111,15 +111,275 @@ plt.show()
     
 
 
+# Les réseaux siamois
+
+## Qu'est-ce qu'un réseau siamois
+
+Un réseau siamois est une architecture de réseau de neurones pensée non pas pour prédire directement une classe, mais pour comparer des exemples entre eux.
+
+L’idée clé est la suivante : deux images que l’on considère comme « similaires » (par exemple deux chiens) doivent être proches l’une de l’autre dans cet espace, alors que deux images « différentes » (un chien et une voiture) doivent être éloignées. Pendant l’entraînement, on présente donc au modèle des paires ou des triplets d’images (ancre, positive, négative) et l’on ajuste les poids de façon à réduire la distance entre ancre et positive, tout en augmentant la distance entre ancre et négative.
+
+Concrètement, dans le code, nous n’instancions qu’un seul réseau : nous lui passons tour à tour les images ancre, positive et négative, puis nous mettons à jour *une seule* fois les poids de ce modèle à partir de la loss calculée sur l’ensemble du triplet (nous aborderons la loss plus tard). Nous utiliserons ce modèle pour extraire les embeddings des images. Un *embedding* désigne ici la représentation vectorielle extraite par le réseau à partir d’une image, qui permet de comparer leur similarité dans un espace de dimension réduite. En pratique, presque n’importe quelle architecture de réseau de neurones (CNN, transformer, etc.) peut jouer ce rôle, à condition de produire un embedding en sortie.
+
+Dans la suite, nous allons détailler le modèle utilisé pour produire ces embeddings, ainsi que la fonction de coût (triplet loss) qui formalise cette notion de similarité.
+
+![Schéma d'un réseau siamois](siamese-scheme-french.png)
+
+## VGG 11
+
+VGG11 est une architecture de réseau de neurones convolutifs proposée en 2014 par une équipe de l’université d’Oxford (Simonyan et Zisserman). L’idée majeure de VGG est d’empiler de nombreux petits filtres convolutifs 3×3, séparés par des couches de pooling, plutôt que d’utiliser quelques grandes convolutions, ce qui permet d’augmenter la profondeur du réseau tout en gardant une structure très régulière.
+
+VGG11 est l’une des variantes les plus simples de cette famille : onze couches organisées en blocs successifs, qui transforment une image RGB en un vecteur de caractéristiques de dimension fixe. Dans notre travail, nous partons de cette architecture pré‑entraînée sur ImageNet et nous l’adaptons pour produire des embeddings compacts adaptés à CIFAR‑10 et à l’apprentissage par triplets.
+
+![VGG11](vgg11-model.png)
+
+Mais voyons tout d'abord la taille du tenseur en sortie de VGG11.
+
 
 ```python
+import torch
+from torchvision import models
+
+vgg = models.vgg11(pretrained=False)
+
+sample = images[0]                              
+x = torch.from_numpy(sample).permute(2, 0, 1)
+x = x.unsqueeze(0).float() / 255.0
+
+with torch.no_grad():
+    out = vgg(x)
+
+print("Taille du tenseur en sortie de VGG11 :", out.shape)
+```
+    Taille du tenseur en sortie de VGG11 : torch.Size([1, 1000])
+
+
+La taille `(1, 1000)` signifie que, pour une image d’entrée, VGG11 renvoie un vecteur de 1 000 composantes. Ce nombre vient directement de la couche fully‑connected finale du modèle ImageNet d’origine : VGG11 a été conçu pour classer les images dans les 1 000 classes du challenge ImageNet, et sa dernière couche sort un vecteur de 1 000 probabilités, une probabilité pour chaque classe.
+
+Dans notre cas, nous n’utiliserons pas ce vecteur. Nous utiliserons la sortie de la dernière couche de convolution de VGG donnée par `vgg.features`. Nous rajouterons juste une couche linéaire pour avoir un vecteur d'embedding de taille 128.
+
+Quelle est la taille du tenseur juste après la dernière couche de convolution ?
+
+
+```python
+with torch.no_grad():
+    out = vgg.features(x)
+
+print("Taille du tenseur en sortie de la dernière couche de convolution de VGG11 :", out.shape)
+```
+
+    Taille du tenseur en sortie de la dernière couche de convolution de VGG11 : torch.Size([1, 512, 1, 1])
+
+
+Nous remarquons que nous avons une taille de (512, 1, 1).
+- 512 : le nombre de cartes de caractéristiques (features) produites par la dernière couche de convolution, donc 512 canaux différents décrivant l’image ;
+- 1, 1 : la hauteur et la largeur spatiales, réduites à 1×1 par la succession de convolutions et de poolings, ce qui signifie que chaque canal résume toute l’image en un seul « neurone » (une valeur) avant de passer aux couches fully‑connected.
+
+Nous aurons donc une taille en entrée de la couche linéaire de 512 x 1 x 1 = 512. Pour l'embedding, nous déciderons de réduire sa taille à 128 grâce à une couche linéaire (mais nous aurions très bien pu garder 512 et ne pas rajouter de couche linéaires !). A la fin du modèle nous rajoutons une couche de normalisation qui prendra tout son sens prochainement !
+
+
+```python
+import torch.nn as nn
+import torch.nn.functional as F
+
+class VGG11Embedding(nn.Module):
+    def __init__(self, pretrained):
+        super(VGG11Embedding, self).__init__()
+        vgg = models.vgg11(pretrained=pretrained)
+        self.features = vgg.features
+        self.linear = nn.Linear(512, 128)
+        
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        x = self.linear(x)
+        x = F.normalize(x, p=2, dim=1)
+        return x
+```
+
+Vérifions la taille en sortie de notre modèle :
+
+
+```python
+vgg_embedding = VGG11Embedding(pretrained=False)
+
+with torch.no_grad():
+    out = vgg_embedding(x)
+
+print("Taille du tenseur en sortie de notre modèle :", out.shape)
+```
+
+    Taille du tenseur en sortie de notre modèle : torch.Size([1, 128])
+
+
+Nous avons donc bien un vecteur d'embedding de taille 128.
+
+## La triplet loss
+
+L’objectif de la triplet loss est d’imposer une structure géométrique à l’espace des embeddings : pour chaque triplet (ancre, positive, négative), on veut que l’image positive soit plus proche de l’ancre que l’image négative, avec une certaine marge. Autrement dit, on cherche à vérifier
+\[ d(f(a), f(p)) + m < d(f(a), f(n)), \]
+où \(f(\cdot)\) est le réseau d’embedding, \(d\) une mesure de distance (ou de "non‑similarité") et \(m > 0\) une marge fixée.
+
+
+Dans notre cas, nous utilisons une distance dérivée de la similarité cosinus : plus deux vecteurs sont proches angulairement, plus ils sont considérés comme similaires. La triplet loss s’écrit alors, pour un batch de taille \(B\),
+\[ \mathcal{L} = \frac{1}{B} \sum_{i=1}^B \max\big(0,\ d(a_i, p_i) - d(a_i, n_i) + m\big), \]
+où chaque terme est nul dès que la contrainte est satisfaite (le triplet est "bon") et strictement positif lorsque l’ancre est encore trop proche de la négative.
+
+
+
+```python
+def triplet_loss(anchor, positive, negative, margin=0.4):
+    positive_distances = 1 - F.cosine_similarity(anchor, positive, dim=1)
+    negative_distances = 1 - F.cosine_similarity(anchor, negative, dim=1)
+    loss = torch.clamp(positive_distances - negative_distances + margin, min=0)
+    return loss.mean()
+```
+
+
+
+
+
+```python
+triplets = np.empty((0, 3, 32, 32, 3), dtype=np.uint8)
+triplets_labels = np.empty((0, 3), dtype=np.uint8)
+
+for target in range(10):
+    class_mask = (labels == target)
+    images_target = images[class_mask]
+    labels_target = labels[class_mask]
+
+    pairs = images_target.reshape(-1, 2, 32, 32, 3)
+    pos_labels = np.ones((len(pairs), 2), dtype=np.uint8) * target
+
+    not_target_mask = (labels != target)
+    images_not_target = images[not_target_mask]
+    labels_not_target = labels[not_target_mask]
+
+    # On echantillonne un nombre fixe de negatives pour cette classe
+    n_neg = min(2500, len(images_not_target))
+    neg_indices = np.random.choice(len(images_not_target), n_neg, replace=False)
+    negatives = images_not_target[neg_indices]
+    neg_labels = labels_not_target[neg_indices]
+
+    pairs = pairs[:n_neg]
+    pos_labels = pos_labels[:n_neg]
+
+    class_triplets = np.concatenate(
+        [pairs, negatives.reshape(n_neg, 1, 32, 32, 3)],
+        axis=1,
+    )
+    class_triplet_labels = np.concatenate(
+        [pos_labels, neg_labels.reshape(n_neg, 1)],
+        axis=1,
+    )
+
+    triplets = np.concatenate([triplets, class_triplets], axis=0)
+    triplets_labels = np.concatenate([triplets_labels, class_triplet_labels], axis=0)
+
+triplets.shape, triplets_labels.shape
 
 ```
 
 
+
+
+    ((25000, 3, 32, 32, 3), (25000, 3))
+
+
+
+### La classe `TripletsCIFAR10Dataset` et la visualisation des triplets
+
+Pour faciliter l’entraînement, nous encapsulons ces triplets dans un `Dataset` dédié. Le tenseur de triplets est converti au format `(N, 3, C, H, W)` puis, à chaque appel, on renvoie les trois images `(ancre, positive, négative)`. Nous pouvons ensuite prélever quelques indices au hasard dans ce Dataset pour visualiser des triplets concrets (images ancre/positive/négative et leurs labels associés) et vérifier que la construction est cohérente.
+
+
 ```python
+from torch.utils.data import Dataset
+import torchvision.transforms as T
+
+class TripletsCIFAR10Dataset(Dataset):
+    def __init__(self, triplets, transform=None):
+        # (N, 3, H, W, C) -> (N, 3, C, H, W)
+        self.triplets = torch.from_numpy(
+            triplets.transpose(0, 1, 4, 2, 3) / 255.0
+        ).float()
+        self.transform = transform
+
+    def __len__(self):
+        return self.triplets.shape[0]
+
+    def __getitem__(self, idx):
+        triplet = self.triplets[idx]
+        anchor, positive, negative = triplet[0], triplet[1], triplet[2]
+        if self.transform is not None:
+            anchor = self.transform(anchor)
+            positive = self.transform(positive)
+            negative = self.transform(negative)
+        return anchor, positive, negative
+
+train_transforms = T.Compose([
+    T.RandomCrop(32, padding=4),
+    T.RandomHorizontalFlip(),
+    T.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2470, 0.2435, 0.2616]),
+])
+
+val_transforms = T.Compose([
+    T.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2470, 0.2435, 0.2616]),
+])
+
+triplet_dataset = TripletsCIFAR10Dataset(triplets)
+len(triplet_dataset)
+```
+
+
+
+
+    25000
+
+
+
+Voyons une sélection aléatoire de triplets.
+
+
+```python
+n_examples = 5
+indices = np.random.choice(len(triplet_dataset), n_examples, replace=False)
+
+fig, axes = plt.subplots(n_examples, 3, figsize=(6, 1 * n_examples))
+
+for row_idx, idx in enumerate(indices):
+    anchor, positive, negative = triplet_dataset[idx]
+
+    anchor_img = anchor.permute(1, 2, 0).numpy()
+    positive_img = positive.permute(1, 2, 0).numpy()
+    negative_img = negative.permute(1, 2, 0).numpy()
+
+    anchor_label = int(triplets_labels[idx, 0])
+    positive_label = int(triplets_labels[idx, 1])
+    negative_label = int(triplets_labels[idx, 2])
+
+    axes[row_idx, 0].imshow(anchor_img)
+    axes[row_idx, 0].set_title(f'anc: {label_names[anchor_label]}', fontsize=12)
+    axes[row_idx, 0].axis('off')
+    axes[row_idx, 0].set_ylabel(f'Triplet {idx}', fontsize=12, rotation=0, labelpad=50)
+
+    axes[row_idx, 1].imshow(positive_img)
+    axes[row_idx, 1].set_title(f'pos: {label_names[positive_label]}', fontsize=12)
+    axes[row_idx, 1].axis('off')
+
+    axes[row_idx, 2].imshow(negative_img)
+    axes[row_idx, 2].set_title(f'neg: {label_names[negative_label]}', fontsize=12)
+    axes[row_idx, 2].axis('off')
+
+plt.tight_layout()
+plt.show()
 
 ```
+
+
+    
+![png](article_files/article_28_0.png)
+    
+
 
 
 ```python
