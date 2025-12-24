@@ -1,3 +1,5 @@
 __pycache__/
 *.excalidraw
 *.DS_Store
+runs/
+runs_koleo/
