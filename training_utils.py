@@ -16,16 +16,6 @@ from torchvision import models
 
 
 
-
-def setup_seed(seed=42):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-    if torch.mps.is_available():
-        torch.mps.manual_seed(seed)
-
-
 def get_device():
     if torch.cuda.is_available():
         return "cuda"
@@ -113,9 +103,8 @@ VAL_TRANSFORMS = T.Compose([
 
 
 class VGG11Embedding(nn.Module):
-    def __init__(self, pretrained=True):
+    def __init__(self, weights=None):
         super(VGG11Embedding, self).__init__()
-        weights = models.VGG11_Weights.IMAGENET1K_V1 if pretrained else None
         vgg = models.vgg11(weights=weights)
         self.features = vgg.features
         self.linear = nn.Linear(512, 128)
@@ -135,8 +124,11 @@ def triplet_loss(anchor, positive, negative, margin=0.4):
     return loss.mean()
 
 
-def create_dataloaders(triplets, triplets_labels, batch_size=64, val_split=0.05):
+def create_dataloaders(triplets, triplets_labels, batch_size=64, val_split=0.05, seed=None, generator=None):
     num_train = int((1 - val_split) * len(triplets))
+    
+    if seed is not None:
+        np.random.seed(seed)
     shuffle_indices = np.random.permutation(len(triplets))
     triplets = triplets[shuffle_indices]
     triplets_labels = triplets_labels[shuffle_indices]
@@ -149,59 +141,10 @@ def create_dataloaders(triplets, triplets_labels, batch_size=64, val_split=0.05)
     train_dataset = TripletsCIFAR10Dataset(train_triplets, transform=TRAIN_TRANSFORMS)
     val_dataset = TripletsCIFAR10Dataset(val_triplets, transform=VAL_TRANSFORMS)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, generator=generator)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, val_triplets, val_labels
-    net.eval()
-    val_loss = 0.0
-    good_triplets = 0
-    total_triplets = 0
-
-    positive_similarities = []
-    negative_similarities = []
-    positive_euclidean_distances = []
-    negative_euclidean_distances = []
-
-    with torch.no_grad():
-        for batch_idx, (anc, pos, neg) in enumerate(dataloader):
-            anc, pos, neg = anc.to(device), pos.to(device), neg.to(device)
-            anc_feat, pos_feat, neg_feat = net(anc), net(pos), net(neg)
-
-            loss = triplet_loss(anc_feat, pos_feat, neg_feat, margin)
-            val_loss += loss.item()
-
-            batch_pos_euc = F.pairwise_distance(anc_feat, pos_feat, p=2)
-            batch_neg_euc = F.pairwise_distance(anc_feat, neg_feat, p=2)
-            positive_euclidean_distances.append(batch_pos_euc)
-            negative_euclidean_distances.append(batch_neg_euc)
-
-            batch_pos_sim = F.cosine_similarity(anc_feat, pos_feat, dim=1)
-            batch_neg_sim = F.cosine_similarity(anc_feat, neg_feat, dim=1)
-            positive_similarities.append(batch_pos_sim)
-            negative_similarities.append(batch_neg_sim)
-
-            good_triplets += (batch_pos_sim > batch_neg_sim).sum()
-            total_triplets += anc.shape[0]
-
-    positive_euclidean_distances = torch.cat(positive_euclidean_distances, dim=0)
-    negative_euclidean_distances = torch.cat(negative_euclidean_distances, dim=0)
-    positive_similarities = torch.cat(positive_similarities, dim=0)
-    negative_similarities = torch.cat(negative_similarities, dim=0)
-
-    scores = torch.cat([positive_similarities, negative_similarities], dim=0)
-    targets = torch.cat([torch.ones_like(positive_similarities), torch.zeros_like(negative_similarities)], dim=0)
-    val_auc = roc_auc_score(targets.cpu().numpy(), scores.cpu().numpy())
-
-    return {
-        "val_loss": val_loss / (batch_idx + 1),
-        "val_auc": val_auc,
-        "mean_positive_similarities": positive_similarities.mean().item(),
-        "mean_negative_similarities": negative_similarities.mean().item(),
-        "mean_positive_euclidean_distances": positive_euclidean_distances.mean().item(),
-        "mean_negative_euclidean_distances": negative_euclidean_distances.mean().item(),
-        "good_triplets_ratio": (good_triplets / total_triplets).item(),
-    }
 
 
 def setup_training_dir(runs_dir_name, config):

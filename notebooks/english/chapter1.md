@@ -8,26 +8,8 @@ We will then study the KoLeo loss, a batch-dependent regularization that aims to
 
 We start by describing the dataset, the construction of triplets, and the evaluation, then we will compare the results with and without *KoLeo* before discussing the effect of gradient accumulation.
 
-First, we set the *seeds* for reproducibility.
+Throughout this article, we will set the random seed at appropriate moments to ensure reproducibility.
 
-
-```python
-import numpy as np
-import torch
-
-seed = 42
-
-def set_seed(seed):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-    if torch.mps.is_available():
-        torch.mps.manual_seed(seed)
-
-set_seed(seed)
-
-```
 
 ## The Dataset used
 
@@ -40,6 +22,8 @@ After downloading, we notice that the archive contains 6 binary files: `data_bat
 ```python
 import pickle
 
+import numpy as np
+
 def unpickle(file):
     with open(file, 'rb') as fo:
         dict = pickle.load(fo, encoding='bytes')
@@ -51,7 +35,6 @@ labels = np.concatenate([data_batch[i][b'labels'] for i in range(5)])
 
 images = images.reshape((-1, 3, 32, 32)).transpose(0, 2, 3, 1)
 images.shape
-
 ```
 
 
@@ -89,7 +72,7 @@ plt.show()
 
 
     
-![png](chapter1_files/chapter1_5_0.png)
+![png](chapter1_files/chapter1_4_0.png)
     
 
 
@@ -117,6 +100,7 @@ Let's first see the size of the tensor at the output of VGG11.
 
 
 ```python
+import torch
 from torchvision import models
 
 vgg = models.vgg11(weights=None)
@@ -129,7 +113,6 @@ with torch.no_grad():
     out = vgg(x)
 
 print("Size of the tensor after VGG11:", out.shape)
-
 ```
 
     Size of the tensor after VGG11: torch.Size([1, 1000])
@@ -148,11 +131,9 @@ with torch.no_grad():
     out = vgg.features(x)
 
 print("Size of the tensor after the last convolutional layer:", out.shape)
-
 ```
 
     Size of the tensor after the last convolutional layer: torch.Size([1, 512, 1, 1])
-
 
 
 - `512` corresponds to the number of feature maps produced by the last convolutional layer: 512 channels describing the image.
@@ -167,7 +148,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class VGG11Embedding(nn.Module):
-    def __init__(self, weights):
+    def __init__(self, weights=None):
         super(VGG11Embedding, self).__init__()
         vgg = models.vgg11(weights=weights)
         self.features = vgg.features
@@ -193,7 +174,6 @@ with torch.no_grad():
     out = vgg_embedding(x)
 
 print("Tensor size after our model:", out.shape)
-
 ```
 
     Tensor size after our model: torch.Size([1, 128])
@@ -201,13 +181,14 @@ print("Tensor size after our model:", out.shape)
 
 ## The *triplet loss*
 
-The objective of the *triplet loss* is to impose a geometric structure on the embedding space: for each triplet of images (`anchor`, `positive`, `negative`), we want the embedding of `positive` to be closer to that of `anchor` than that of `negative`, with a certain margin. In other words, we seek to verify
+Triplet loss enforces that, for each (`anchor`, `positive`, `negative`), the positive is embedded closer to the anchor than the negative, with a certain margin. In other words, we seek to verify
 $$ d(f(a), f(p)) + m < d(f(a), f(n)) $$
 where \\(f(\cdot)\\) is the embedding network, \\(d\\) a distance measure and \\(m > 0\\) the margin.
 
 
+
 In our case, we use a distance derived from cosine similarity: the closer two vectors are angularly, the more they are considered similar. The *triplet loss* is then written, for a batch of size \\(B\\),
-$$ \mathcal{L} = \frac{1}{B} \sum_{i=1}^B \max\big(0,\ d(-i, p_i) - d(-i, n_i) + m\big). $$
+$$ \mathcal{L} = \frac{1}{B} \sum_{i=1}^B \max\big(0,\ d(a_i, p_i) - d(a_i, n_i) + m\big). $$
 
 Each term is zero as soon as the constraint is satisfied (the triplet is “good”). The value is strictly positive when `anchor` is still too close to `negative`. We therefore do not only want \\(d(-i, p_i) < d(-i, n_i)\\), but a separation of at least \\(m\\).
 
@@ -236,7 +217,8 @@ We repeat this operation for each of the 10 classes, which gives a globally bala
 triplets = np.empty((0, 3, 32, 32, 3), dtype=np.uint8)
 triplets_labels = np.empty((0, 3), dtype=np.uint8)
 
-set_seed(seed)
+seed = 42
+np.random.seed(seed)
 for target in range(10):
     class_mask = (labels == target)
     images_target = images[class_mask]
@@ -249,7 +231,6 @@ for target in range(10):
     images_not_target = images[not_target_mask]
     labels_not_target = labels[not_target_mask]
 
-    # On echantillonne un nombre fixe de negatives pour cette classe
     n_neg = min(2500, len(images_not_target))
     neg_indices = np.random.choice(len(images_not_target), n_neg, replace=False)
     negatives = images_not_target[neg_indices]
@@ -271,7 +252,6 @@ for target in range(10):
     triplets_labels = np.concatenate([triplets_labels, class_triplet_labels], axis=0)
 
 triplets.shape, triplets_labels.shape
-
 ```
 
 
@@ -366,7 +346,7 @@ plt.show()
 
 
     
-![png](chapter1_files/chapter1_21_0.png)
+![png](chapter1_files/chapter1_20_0.png)
     
 
 
@@ -380,7 +360,7 @@ To train our siamese network with the *triplet loss*, we must choose a few key h
 - the **number of epochs**;
 - the **margin** of the *triplet loss*.
 
-We also define the `device` and choose Adam as the optimizer.
+We also define the `device` here.
 
 
 
@@ -397,9 +377,6 @@ else:
 batch_size = 64
 learning_rate = 5e-4
 margin = 0.4
-
-net = VGG11Embedding(weights=VGG11_Weights.IMAGENET1K_V1).to(device)
-optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate)
 ```
 
 ### Evaluation metrics
@@ -450,7 +427,7 @@ def train_loop(net, dataloader, optimizer, margin, print_freq=10):
 
 ### Validation loop
 
-For the entire validation set, we calculate the metrics defined above (cosine similarities, Euclidean distances, ratio of good triplets and AUC).
+For the entire validation set, we calculate the metrics defined above.
 
 
 
@@ -516,7 +493,7 @@ def validation_loop(net, dataloader, margin):
 
 ### Complete training over several epochs
 
-To train a model, we need to construct our training and validation `DataLoader`s:
+To train a model, we need to construct our training and validation datasets:
 
 
 
@@ -526,21 +503,18 @@ from torch.utils.data import DataLoader
 val_split = 0.05
 num_train = int((1 - val_split) * len(triplets))
 
+np.random.seed(seed)
 shuffle_indices = np.random.permutation(len(triplets))
-triplets = triplets[shuffle_indices]
-triplets_labels = triplets_labels[shuffle_indices]
+shuffled_triplets = triplets[shuffle_indices]
+shuffled_triplets_labels = triplets_labels[shuffle_indices]
 
-train_triplets = triplets[:num_train, ...]
-val_triplets = triplets[num_train:]
-train_labels = triplets_labels[:num_train, ...]
-val_labels = triplets_labels[num_train:]
+train_triplets = shuffled_triplets[:num_train, ...]
+val_triplets = shuffled_triplets[num_train:]
+train_labels = shuffled_triplets_labels[:num_train, ...]
+val_labels = shuffled_triplets_labels[num_train:]
 
 train_dataset = TripletsCIFAR10Dataset(train_triplets, transform=train_transforms)
 val_dataset = TripletsCIFAR10Dataset(val_triplets, transform=val_transforms)
-
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
 ```
 
 We can now write the complete training loop: at each epoch, we train the model on the training triplets, then we calculate the metrics on the validation.
@@ -581,6 +555,7 @@ with (save_dir / "config.json").open("w") as fp:
 
 ```python
 import csv
+import random
 
 metrics_path = save_dir / "training_metrics.csv"
 
@@ -605,10 +580,25 @@ with open(metrics_path, mode='w', newline='') as csvfile:
     writer = csv.DictWriter(csvfile, fieldnames=csv_headers)
     writer.writeheader()
 
-set_seed(seed)
+random.seed(seed)
+torch.manual_seed(seed)
+
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(seed)
+if torch.mps.is_available():
+    torch.mps.manual_seed(seed)
+
+gt = torch.Generator()
+gt.manual_seed(seed)
+
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, generator=gt)
+
+net = VGG11Embedding(weights=VGG11_Weights.IMAGENET1K_V1).to(device)
+optimizer = torch.optim.Adam(net.parameters(), lr=learning_rate)
 
 val_metrics = validation_loop(net, val_loader, margin)
-print(f"Before training, epoch 0 — val_loss = {val_metrics['val_loss']}")
+print(f"Before training")
 print(
     f"Validation metrics — "
     f"val_loss: {val_metrics['val_loss']:.4f}, "
@@ -679,94 +669,94 @@ for epoch_idx in range(epochs):
 
     if (epoch_idx+1) % save_ckpt_freq == 0:
         torch.save(net.state_dict(), save_dir / f'epoch_{epoch_idx+1}.pth')
-
 ```
 
-    Before training, epoch 0 — val_loss = 0.3092861518263817
-    Validation metrics — val_loss: 0.3093, val_auc: 0.6764, mean_positive_similarities: 0.2754, mean_negative_similarities: 0.1793, mean_positive_euclidean_distances: 1.1962, mean_negative_euclidean_distances: 1.2766, good_triplets_ratio: 0.6928
-    Batch 100 : loss = 0.2213
-    Batch 200 : loss = 0.1943
-    Batch 300 : loss = 0.1630
-    Epoch 1 — train_loss = 0.1872, val_loss = 0.1577
-    Validation metrics — val_loss: 0.1577, val_auc: 0.8403, mean_positive_similarities: 0.7603, mean_negative_similarities: 0.2158, mean_positive_euclidean_distances: 0.5773, mean_negative_euclidean_distances: 1.1755, good_triplets_ratio: 0.8352
-    New best AUC: 0.8403 (epoch 1)
-    Batch 100 : loss = 0.1443
-    Batch 200 : loss = 0.1411
-    Batch 300 : loss = 0.1389
-    Epoch 2 — train_loss = 0.1381, val_loss = 0.1381
-    Validation metrics — val_loss: 0.1381, val_auc: 0.8643, mean_positive_similarities: 0.7282, mean_negative_similarities: 0.1812, mean_positive_euclidean_distances: 0.6405, mean_negative_euclidean_distances: 1.2281, good_triplets_ratio: 0.8616
-    New best AUC: 0.8643 (epoch 2)
-    Batch 100 : loss = 0.1181
-    Batch 200 : loss = 0.1119
-    Batch 300 : loss = 0.1102
-    Epoch 3 — train_loss = 0.1124, val_loss = 0.1306
-    Validation metrics — val_loss: 0.1306, val_auc: 0.8767, mean_positive_similarities: 0.7053, mean_negative_similarities: 0.0625, mean_positive_euclidean_distances: 0.6413, mean_negative_euclidean_distances: 1.3186, good_triplets_ratio: 0.8744
-    New best AUC: 0.8767 (epoch 3)
-    Batch 100 : loss = 0.1101
-    Batch 200 : loss = 0.0936
-    Batch 300 : loss = 0.0946
-    Epoch 4 — train_loss = 0.0972, val_loss = 0.0939
-    Validation metrics — val_loss: 0.0939, val_auc: 0.9159, mean_positive_similarities: 0.7409, mean_negative_similarities: 0.0620, mean_positive_euclidean_distances: 0.6181, mean_negative_euclidean_distances: 1.3318, good_triplets_ratio: 0.8984
-    New best AUC: 0.9159 (epoch 4)
-    Batch 100 : loss = 0.0873
-    Batch 200 : loss = 0.0776
-    Batch 300 : loss = 0.0822
-    Epoch 5 — train_loss = 0.0826, val_loss = 0.0692
-    Validation metrics — val_loss: 0.0692, val_auc: 0.9408, mean_positive_similarities: 0.7658, mean_negative_similarities: 0.0084, mean_positive_euclidean_distances: 0.5796, mean_negative_euclidean_distances: 1.3767, good_triplets_ratio: 0.9312
-    New best AUC: 0.9408 (epoch 5)
-    Batch 100 : loss = 0.0726
-    Batch 200 : loss = 0.0690
-    Batch 300 : loss = 0.0681
-    Epoch 6 — train_loss = 0.0712, val_loss = 0.0926
-    Validation metrics — val_loss: 0.0926, val_auc: 0.9142, mean_positive_similarities: 0.7083, mean_negative_similarities: -0.0024, mean_positive_euclidean_distances: 0.6398, mean_negative_euclidean_distances: 1.3837, good_triplets_ratio: 0.9040
-    Batch 100 : loss = 0.0635
-    Batch 200 : loss = 0.0679
-    Batch 300 : loss = 0.0632
-    Epoch 7 — train_loss = 0.0642, val_loss = 0.0824
-    Validation metrics — val_loss: 0.0824, val_auc: 0.9240, mean_positive_similarities: 0.7127, mean_negative_similarities: -0.0651, mean_positive_euclidean_distances: 0.6169, mean_negative_euclidean_distances: 1.4298, good_triplets_ratio: 0.9208
-    Batch 100 : loss = 0.0551
-    Batch 200 : loss = 0.0564
-    Batch 300 : loss = 0.0614
-    Epoch 8 — train_loss = 0.0570, val_loss = 0.0680
-    Validation metrics — val_loss: 0.0680, val_auc: 0.9399, mean_positive_similarities: 0.7494, mean_negative_similarities: -0.0283, mean_positive_euclidean_distances: 0.5977, mean_negative_euclidean_distances: 1.4036, good_triplets_ratio: 0.9312
+    Before training
+    Validation metrics — val_loss: 0.3156, val_auc: 0.6642, mean_positive_similarities: 0.2750, mean_negative_similarities: 0.1853, mean_positive_euclidean_distances: 1.1968, mean_negative_euclidean_distances: 1.2714, good_triplets_ratio: 0.6656
+    Batch 100 : loss = 0.2465
+    Batch 200 : loss = 0.2036
+    Batch 300 : loss = 0.1619
+    Epoch 1 — train_loss = 0.1966, val_loss = 0.1742
+    Validation metrics — val_loss: 0.1742, val_auc: 0.8233, mean_positive_similarities: 0.7488, mean_negative_similarities: 0.2164, mean_positive_euclidean_distances: 0.5882, mean_negative_euclidean_distances: 1.1666, good_triplets_ratio: 0.8264
+    New best AUC: 0.8233 (epoch 1)
+    Batch 100 : loss = 0.1609
+    Batch 200 : loss = 0.1348
+    Batch 300 : loss = 0.1436
+    Epoch 2 — train_loss = 0.1433, val_loss = 0.1177
+    Validation metrics — val_loss: 0.1177, val_auc: 0.8939, mean_positive_similarities: 0.7731, mean_negative_similarities: 0.0771, mean_positive_euclidean_distances: 0.5667, mean_negative_euclidean_distances: 1.2967, good_triplets_ratio: 0.8840
+    New best AUC: 0.8939 (epoch 2)
+    Batch 100 : loss = 0.1226
+    Batch 200 : loss = 0.1147
+    Batch 300 : loss = 0.1107
+    Epoch 3 — train_loss = 0.1162, val_loss = 0.1216
+    Validation metrics — val_loss: 0.1216, val_auc: 0.8894, mean_positive_similarities: 0.7237, mean_negative_similarities: 0.0702, mean_positive_euclidean_distances: 0.6357, mean_negative_euclidean_distances: 1.3155, good_triplets_ratio: 0.8712
+    Batch 100 : loss = 0.1035
+    Batch 200 : loss = 0.1001
+    Batch 300 : loss = 0.0952
+    Epoch 4 — train_loss = 0.0992, val_loss = 0.1136
+    Validation metrics — val_loss: 0.1136, val_auc: 0.8990, mean_positive_similarities: 0.7313, mean_negative_similarities: 0.0493, mean_positive_euclidean_distances: 0.6222, mean_negative_euclidean_distances: 1.3327, good_triplets_ratio: 0.8800
+    New best AUC: 0.8990 (epoch 4)
+    Batch 100 : loss = 0.0947
+    Batch 200 : loss = 0.0880
+    Batch 300 : loss = 0.0857
+    Epoch 5 — train_loss = 0.0879, val_loss = 0.0829
+    Validation metrics — val_loss: 0.0829, val_auc: 0.9301, mean_positive_similarities: 0.7747, mean_negative_similarities: 0.0015, mean_positive_euclidean_distances: 0.5579, mean_negative_euclidean_distances: 1.3719, good_triplets_ratio: 0.9176
+    New best AUC: 0.9301 (epoch 5)
+    Batch 100 : loss = 0.0810
+    Batch 200 : loss = 0.0743
+    Batch 300 : loss = 0.0755
+    Epoch 6 — train_loss = 0.0763, val_loss = 0.0828
+    Validation metrics — val_loss: 0.0828, val_auc: 0.9319, mean_positive_similarities: 0.7436, mean_negative_similarities: -0.0305, mean_positive_euclidean_distances: 0.5879, mean_negative_euclidean_distances: 1.4052, good_triplets_ratio: 0.9120
+    New best AUC: 0.9319 (epoch 6)
+    Batch 100 : loss = 0.0622
+    Batch 200 : loss = 0.0658
+    Batch 300 : loss = 0.0712
+    Epoch 7 — train_loss = 0.0670, val_loss = 0.0764
+    Validation metrics — val_loss: 0.0764, val_auc: 0.9408, mean_positive_similarities: 0.7853, mean_negative_similarities: 0.0552, mean_positive_euclidean_distances: 0.5493, mean_negative_euclidean_distances: 1.3412, good_triplets_ratio: 0.9232
+    New best AUC: 0.9408 (epoch 7)
+    Batch 100 : loss = 0.0616
+    Batch 200 : loss = 0.0557
+    Batch 300 : loss = 0.0622
+    Epoch 8 — train_loss = 0.0609, val_loss = 0.0849
+    Validation metrics — val_loss: 0.0849, val_auc: 0.9322, mean_positive_similarities: 0.7610, mean_negative_similarities: 0.0136, mean_positive_euclidean_distances: 0.5814, mean_negative_euclidean_distances: 1.3695, good_triplets_ratio: 0.9152
     Batch 100 : loss = 0.0553
-    Batch 200 : loss = 0.0489
-    Batch 300 : loss = 0.0574
-    Epoch 9 — train_loss = 0.0536, val_loss = 0.0680
-    Validation metrics — val_loss: 0.0680, val_auc: 0.9430, mean_positive_similarities: 0.7580, mean_negative_similarities: -0.0621, mean_positive_euclidean_distances: 0.5597, mean_negative_euclidean_distances: 1.4294, good_triplets_ratio: 0.9352
-    New best AUC: 0.9430 (epoch 9)
-    Batch 100 : loss = 0.0467
-    Batch 200 : loss = 0.0477
-    Batch 300 : loss = 0.0488
-    Epoch 10 — train_loss = 0.0473, val_loss = 0.0705
-    Validation metrics — val_loss: 0.0705, val_auc: 0.9395, mean_positive_similarities: 0.7559, mean_negative_similarities: -0.0245, mean_positive_euclidean_distances: 0.5740, mean_negative_euclidean_distances: 1.4036, good_triplets_ratio: 0.9360
-    Batch 100 : loss = 0.0413
-    Batch 200 : loss = 0.0423
-    Batch 300 : loss = 0.0439
-    Epoch 11 — train_loss = 0.0430, val_loss = 0.0623
-    Validation metrics — val_loss: 0.0623, val_auc: 0.9472, mean_positive_similarities: 0.7632, mean_negative_similarities: -0.0652, mean_positive_euclidean_distances: 0.5587, mean_negative_euclidean_distances: 1.4337, good_triplets_ratio: 0.9400
-    New best AUC: 0.9472 (epoch 11)
-    Batch 100 : loss = 0.0411
-    Batch 200 : loss = 0.0412
+    Batch 200 : loss = 0.0547
+    Batch 300 : loss = 0.0546
+    Epoch 9 — train_loss = 0.0550, val_loss = 0.0797
+    Validation metrics — val_loss: 0.0797, val_auc: 0.9353, mean_positive_similarities: 0.7615, mean_negative_similarities: -0.0017, mean_positive_euclidean_distances: 0.5685, mean_negative_euclidean_distances: 1.3824, good_triplets_ratio: 0.9224
+    Batch 100 : loss = 0.0533
+    Batch 200 : loss = 0.0508
+    Batch 300 : loss = 0.0457
+    Epoch 10 — train_loss = 0.0500, val_loss = 0.0715
+    Validation metrics — val_loss: 0.0715, val_auc: 0.9451, mean_positive_similarities: 0.7701, mean_negative_similarities: -0.0179, mean_positive_euclidean_distances: 0.5688, mean_negative_euclidean_distances: 1.3959, good_triplets_ratio: 0.9336
+    New best AUC: 0.9451 (epoch 10)
+    Batch 100 : loss = 0.0429
+    Batch 200 : loss = 0.0426
+    Batch 300 : loss = 0.0453
+    Epoch 11 — train_loss = 0.0439, val_loss = 0.0698
+    Validation metrics — val_loss: 0.0698, val_auc: 0.9455, mean_positive_similarities: 0.7842, mean_negative_similarities: -0.0393, mean_positive_euclidean_distances: 0.5385, mean_negative_euclidean_distances: 1.4072, good_triplets_ratio: 0.9392
+    New best AUC: 0.9455 (epoch 11)
+    Batch 100 : loss = 0.0400
+    Batch 200 : loss = 0.0419
     Batch 300 : loss = 0.0417
-    Epoch 12 — train_loss = 0.0414, val_loss = 0.0665
-    Validation metrics — val_loss: 0.0665, val_auc: 0.9444, mean_positive_similarities: 0.7527, mean_negative_similarities: -0.0781, mean_positive_euclidean_distances: 0.5670, mean_negative_euclidean_distances: 1.4441, good_triplets_ratio: 0.9376
-    Batch 100 : loss = 0.0323
-    Batch 200 : loss = 0.0333
-    Batch 300 : loss = 0.0366
-    Epoch 13 — train_loss = 0.0347, val_loss = 0.0611
-    Validation metrics — val_loss: 0.0611, val_auc: 0.9497, mean_positive_similarities: 0.7549, mean_negative_similarities: -0.0886, mean_positive_euclidean_distances: 0.5690, mean_negative_euclidean_distances: 1.4518, good_triplets_ratio: 0.9384
-    New best AUC: 0.9497 (epoch 13)
-    Batch 100 : loss = 0.0362
-    Batch 200 : loss = 0.0359
-    Batch 300 : loss = 0.0357
-    Epoch 14 — train_loss = 0.0354, val_loss = 0.0722
-    Validation metrics — val_loss: 0.0722, val_auc: 0.9393, mean_positive_similarities: 0.7574, mean_negative_similarities: -0.0259, mean_positive_euclidean_distances: 0.5672, mean_negative_euclidean_distances: 1.4029, good_triplets_ratio: 0.9264
-    Batch 100 : loss = 0.0375
-    Batch 200 : loss = 0.0309
-    Batch 300 : loss = 0.0314
-    Epoch 15 — train_loss = 0.0337, val_loss = 0.0600
-    Validation metrics — val_loss: 0.0600, val_auc: 0.9469, mean_positive_similarities: 0.7675, mean_negative_similarities: -0.0421, mean_positive_euclidean_distances: 0.5642, mean_negative_euclidean_distances: 1.4154, good_triplets_ratio: 0.9440
+    Epoch 12 — train_loss = 0.0423, val_loss = 0.0712
+    Validation metrics — val_loss: 0.0712, val_auc: 0.9433, mean_positive_similarities: 0.7565, mean_negative_similarities: -0.0527, mean_positive_euclidean_distances: 0.5701, mean_negative_euclidean_distances: 1.4226, good_triplets_ratio: 0.9264
+    Batch 100 : loss = 0.0396
+    Batch 200 : loss = 0.0404
+    Batch 300 : loss = 0.0371
+    Epoch 13 — train_loss = 0.0393, val_loss = 0.0777
+    Validation metrics — val_loss: 0.0777, val_auc: 0.9384, mean_positive_similarities: 0.7574, mean_negative_similarities: -0.0040, mean_positive_euclidean_distances: 0.5816, mean_negative_euclidean_distances: 1.3855, good_triplets_ratio: 0.9160
+    Batch 100 : loss = 0.0351
+    Batch 200 : loss = 0.0350
+    Batch 300 : loss = 0.0353
+    Epoch 14 — train_loss = 0.0361, val_loss = 0.0642
+    Validation metrics — val_loss: 0.0642, val_auc: 0.9538, mean_positive_similarities: 0.7782, mean_negative_similarities: -0.0371, mean_positive_euclidean_distances: 0.5449, mean_negative_euclidean_distances: 1.4148, good_triplets_ratio: 0.9376
+    New best AUC: 0.9538 (epoch 14)
+    Batch 100 : loss = 0.0349
+    Batch 200 : loss = 0.0335
+    Batch 300 : loss = 0.0364
+    Epoch 15 — train_loss = 0.0354, val_loss = 0.0621
+    Validation metrics — val_loss: 0.0621, val_auc: 0.9522, mean_positive_similarities: 0.7842, mean_negative_similarities: -0.0637, mean_positive_euclidean_distances: 0.5275, mean_negative_euclidean_distances: 1.4324, good_triplets_ratio: 0.9384
 
 
 ### Visualization of the training loss curve
@@ -789,8 +779,23 @@ plt.show()
 
 
     
-![png](chapter1_files/chapter1_34_0.png)
+![png](chapter1_files/chapter1_33_0.png)
     
+
+
+Here, we load the best epoch of the model.
+
+
+```python
+best_epoch_path = list((save_dir.glob('best_epoch_*.pth')))[0]
+net.load_state_dict(torch.load(best_epoch_path))
+```
+
+
+
+
+    <All keys matched successfully>
+
 
 
 ### ROC curve
@@ -848,25 +853,8 @@ plt.show()
 
 
     
-![png](chapter1_files/chapter1_36_0.png)
+![png](chapter1_files/chapter1_37_0.png)
     
-
-
-Here, we add code to reload the model in case something goes wrong later in the notebook.
-
-
-
-```python
-save_dir = Path("runs/20251216_220611")
-net.load_state_dict(torch.load(save_dir / 'epoch_15.pth'))
-
-```
-
-
-
-
-    <All keys matched successfully>
-
 
 
 # Distance matrix
@@ -907,16 +895,16 @@ for class_idx, count in enumerate(samples_per_class):
 ```
 
     Number of embeddings per class:
-      airplane   : 124
-      automobile : 113
-      bird       : 125
+      airplane   : 121
+      automobile : 122
+      bird       : 146
       cat        : 119
-      deer       : 127
-      dog        : 138
-      frog       : 119
-      horse      : 123
-      ship       : 130
-      truck      : 132
+      deer       : 125
+      dog        : 117
+      frog       : 109
+      horse      : 121
+      ship       : 129
+      truck      : 141
 
 
 Now we can plot the heatmap distance matrix.
@@ -979,35 +967,35 @@ print(f"Separation margin: {np.mean(diff_class_dists) - np.mean(same_class_dists
 ```
 
     Dimension of the distance matrix: (10, 10)
-    Heatmap saved in runs/20251216_220611/distance_matrix_heatmap.png
+    Heatmap saved in runs/20251226_232950/distance_matrix_heatmap.png
 
 
 
     
-![png](chapter1_files/chapter1_42_1.png)
+![png](chapter1_files/chapter1_41_1.png)
     
 
 
     
-    Intra-class distance: mean=0.2367, std=0.0698
-    Inter-class distance: mean=1.0365, std=0.2422
-    Separation margin: 0.7998
+    Intra-class distance: mean=0.2249, std=0.0865
+    Inter-class distance: mean=1.0392, std=0.2285
+    Separation margin: 0.8143
 
 
 Several interesting observations emerge from this matrix:
 
-**Low diagonal**: intra-class distances (on the diagonal) are all less than 0.4, showing that the model groups images of the same class well. The best grouped classes are *ship* (0.11) and *airplane* (0.16).
+**Low diagonal**: intra-class distances (on the diagonal) are all less than 0.4, showing that the model groups images of the same class well. The best grouped classes are *ship* (0.09) and *automobile* (0.13).
 
-**Good overall separation**: the separation margin (difference between the average inter-class distance and the average intra-class distance) is about 0.80, which is a good sign.
+**Good overall separation**: the separation margin (difference between the average inter-class distance and the average intra-class distance) is about 0.70, which is a good sign.
 
 **Expected semantic confusions**: some pairs of classes remain relatively close, which corresponds to real visual similarities:
-- *cat* and *dog* (0.36): two furry animals of similar size;
-- *airplane* and *ship* (0.75): vehicles with elongated shapes, often with uniform backgrounds (sky/water);
-- *automobile* and *truck* (0.66): road vehicles sharing common visual characteristics.
+- *cat* and *dog* (0.52): two furry animals of similar size;
+- *airplane* and *ship* (0.67): vehicles with elongated shapes, often with uniform backgrounds (sky/water);
+- *automobile* and *truck* (0.63): road vehicles sharing common visual characteristics.
 
-**Well-separated classes**: conversely, *automobile* vs *deer* (1.42) or *bird* vs *truck* (1.20) show high distances, consistent with the absence of visual resemblance between these categories.
+**Well-separated classes**: conversely, *automobile* vs *deer* (1.38) or *bird* vs *truck* (1.26) show high distances, consistent with the absence of visual resemblance between these categories.
 
-## Principal Component Analysis
+## 2D projection using PCA
 
 It is also interesting to observe how our embeddings are distributed. As they live in a 128-dimensional space, we project them into 2D to visualize them.
 
@@ -1154,13 +1142,14 @@ plot_embeddings_with_ellipses(
 
 
     
-![png](chapter1_files/chapter1_52_0.png)
+![png](chapter1_files/chapter1_51_0.png)
     
 
 
 The result depends on the chosen `seed`. Unless you run the exact same code (and with the same `seed`), you will necessarily get a different projection. Nevertheless, we generally find a few trends:
-- *ship* and *airplane* have the smallest ellipse areas, which confirms the analysis of the distance matrix
+- *ship* has the smallest ellipse area, which confirms the analysis of the distance matrix
 - the *cat* and *dog* points are close, as expected
+- moreover, for this training, we can see that the *dog*, *deer*, *cat*, and *bird* points overlap with each other, as they are all semantically close, they are all animals. Even frog is not far away.
 - further confirmation from the distance matrix: *automobile* and *deer* are well separated, as are *bird* and *truck*.
 
 Here are some statistics about our ellipse areas.
@@ -1180,11 +1169,11 @@ for k, v in ellipse_params.items():
         print(f"Ellipse area of {k} = {v['area']:.4f}")
 ```
 
-    Average area of the ellipses: 0.0123
-    Ellipse area of cat = 0.0173
-    Ellipse area of dog = 0.0137
-    Ellipse area of horse = 0.0112
-    Ellipse area of ship = 0.0021
+    Average area of the ellipses: 0.0202
+    Ellipse area of cat = 0.0626
+    Ellipse area of dog = 0.0392
+    Ellipse area of horse = 0.0125
+    Ellipse area of ship = 0.0006
 
 
 # Conclusion
