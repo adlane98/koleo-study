@@ -143,7 +143,7 @@ def plot_distance_matrix_heatmap(dist_matrix, label_names, save_path=None):
             if i != j:
                 diff_class_dists.append(dist_matrix[i, j])
 
-    print(f"\nSame-class distances: mean={np.mean(same_class_dists):.4f}, std={np.std(same_class_dists):.4f}")
-    print(f"Different-class distances: mean={np.mean(diff_class_dists):.4f}, std={np.std(diff_class_dists):.4f}")
+    print(f"\nIntra-class distance: mean={np.mean(same_class_dists):.4f}, std={np.std(same_class_dists):.4f}")
+    print(f"Inter-class distance: mean={np.mean(diff_class_dists):.4f}, std={np.std(diff_class_dists):.4f}")
     print(f"Separation margin: {np.mean(diff_class_dists) - np.mean(same_class_dists):.4f}")
 

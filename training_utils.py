@@ -6,11 +6,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pickle
-from sklearn.metrics import roc_auc_score
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import torchvision.transforms as T
 from torchvision import models
 
@@ -41,9 +40,12 @@ LABEL_NAMES = ['airplane', 'automobile', 'bird', 'cat', 'deer',
                'dog', 'frog', 'horse', 'ship', 'truck']
 
 
-def build_triplets(images, labels, n_neg=2500):
+def build_triplets(images, labels, n_neg=2500, seed=None):
     triplets = np.empty((0, 3, 32, 32, 3), dtype=np.uint8)
     triplets_labels = np.empty((0, 3), dtype=np.uint8)
+
+    if seed is not None:
+        np.random.seed(seed)
 
     for target in range(10):
         class_mask = (labels == target)
@@ -124,7 +126,7 @@ def triplet_loss(anchor, positive, negative, margin=0.4):
     return loss.mean()
 
 
-def create_dataloaders(triplets, triplets_labels, batch_size=64, val_split=0.05, seed=None, generator=None):
+def create_datasets(triplets, triplets_labels, val_split=0.05, seed=None):
     num_train = int((1 - val_split) * len(triplets))
     
     if seed is not None:
@@ -141,10 +143,7 @@ def create_dataloaders(triplets, triplets_labels, batch_size=64, val_split=0.05,
     train_dataset = TripletsCIFAR10Dataset(train_triplets, transform=TRAIN_TRANSFORMS)
     val_dataset = TripletsCIFAR10Dataset(val_triplets, transform=VAL_TRANSFORMS)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, generator=generator)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
-    return train_loader, val_loader, val_triplets, val_labels
+    return train_dataset, val_dataset, val_triplets, val_labels
 
 
 def setup_training_dir(runs_dir_name, config):
@@ -158,7 +157,7 @@ def setup_training_dir(runs_dir_name, config):
     with (save_dir / "config.json").open("w") as fp:
         json.dump(config, fp, indent=4)
 
-    csv_headers = ["epoch", "train_loss", "val_loss", "val_auc", "mean_positive_similarities",
+    csv_headers = ["epoch", "train_loss", "val_loss", "simple_loss", "val_auc", "mean_positive_similarities",
                    "mean_negative_similarities", "mean_positive_euclidean_distances",
                    "mean_negative_euclidean_distances", "good_triplets_ratio"]
     
@@ -174,6 +173,13 @@ def log_metrics(metrics_path, csv_headers, epoch, train_loss, val_metrics):
     with open(metrics_path, mode='a', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=csv_headers)
         writer.writerow({"epoch": epoch, "train_loss": train_loss, **val_metrics})
+
+def print_metrics(val_metrics):
+    metrics_str = ", ".join(
+        f"{key}: {value:.4f}" if isinstance(value, float) else f"{key}: {value}"
+        for key, value in val_metrics.items()
+    )
+    print(f"Validation metrics — {metrics_str}")
 
 
 def plot_losses(train_losses, val_losses, title="Evolution de la loss"):
