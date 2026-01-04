@@ -3,3 +3,5 @@ __pycache__/
 *.DS_Store
 runs/
 runs_koleo/
+runs_koleo_gradacc/
+.ipynb_checkpoints/
