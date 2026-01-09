@@ -127,6 +127,7 @@ def objective(trial):
     use_koleo = trial.suggest_categorical("use_koleo", [True, False])
     if use_koleo:
         koleo_weight = trial.suggest_float("koleo_weight", 1e-4, 1e-1, log=True)
+        trial.set_user_attr("koleo_weight", koleo_weight)
     else:
         koleo_weight = None
         trial.set_user_attr("koleo_weight", 0.0)
