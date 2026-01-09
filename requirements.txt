@@ -1,0 +1,11 @@
+matplotlib
+numpy
+optuna
+pandas
+plotly
+pyyaml
+scikit-learn
+seaborn
+torch
+torchvision
+tqdm
