@@ -62,14 +62,6 @@ The hyperparameter search explores the following parameters:
 - **Embedding size**: Categorical [64, 128, 256]
 - **Optimizer**: Categorical ["Adam", "RMSprop"]
 
-### Study Configuration
-
-- **Study name**: `koleo_gradacc`
-- **Storage**: SQLite database (`optuna_study.db`)
-- **Number of trials**: 100 (configurable in `hp_search.py`)
-- **Objective**: Maximize validation AUC score
-- **Pruning**: Enabled (trials are pruned if they show poor performance)
-
 ### Best Results
 
 After running 100 trials, the best configuration achieved:
