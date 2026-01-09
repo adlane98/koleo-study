@@ -187,7 +187,7 @@ def print_metrics(val_metrics):
     print(f"Validation metrics — {metrics_str}")
 
 
-def plot_losses(train_losses, val_losses, title="Evolution de la loss"):
+def plot_losses(train_losses, val_losses, title="Evolution de la loss", show=True):
     plt.figure(figsize=(8, 4))
     plt.plot(train_losses, label="Train loss")
     plt.plot(val_losses, label="Val loss")
@@ -195,7 +195,8 @@ def plot_losses(train_losses, val_losses, title="Evolution de la loss"):
     plt.ylabel("Loss")
     plt.legend()
     plt.title(title)
-    plt.show()
+    if show:
+        plt.show()
 
 
 def construct_embeddings_by_class(net, labels, triplets, transforms, device):

@@ -49,6 +49,7 @@ def plot_embeddings_with_ellipses(
     labels_array,
     label_names,
     save_img_path,
+    show=True,
 ):
     pca_2d_df = pd.DataFrame({
         'PC1': embeddings_2d[:, 0],
@@ -87,7 +88,9 @@ def plot_embeddings_with_ellipses(
     
     plt.tight_layout()
     plt.savefig(save_img_path, dpi=150, bbox_inches='tight')
-    plt.show()
+    if show:
+        plt.show()
+    plt.close()
 
 
 def compute_distance_matrix(embeddings_by_class):
@@ -108,7 +111,7 @@ def compute_distance_matrix(embeddings_by_class):
     
     return dist_matrix
 
-def plot_distance_matrix_heatmap(dist_matrix, label_names, save_path=None):
+def plot_distance_matrix_heatmap(dist_matrix, label_names, save_path=None, show=True):
     plt.figure(figsize=(10, 9))
 
     col_labels = [f"{label_names[i]}" for i in range(len(label_names))]
@@ -133,7 +136,8 @@ def plot_distance_matrix_heatmap(dist_matrix, label_names, save_path=None):
         plt.savefig(save_path)
         print(f"Distance matrix heatmap saved at {save_path}")
 
-    plt.show()
+    if show:
+        plt.show()
     plt.close()
 
     same_class_dists = np.diag(dist_matrix)
@@ -156,6 +160,7 @@ def plot_distance_matrix_and_embeddings(
     label_names,
     save_path=None,
     title_suffix="",
+    show=True,
 ):
     fig, axes = plt.subplots(1, 2, figsize=(20, 9))
     
@@ -218,7 +223,8 @@ def plot_distance_matrix_and_embeddings(
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"Combined plot saved at {save_path}")
     
-    plt.show()
+    if show:
+        plt.show()
     plt.close()
     
     same_class_dists = np.diag(dist_matrix)
