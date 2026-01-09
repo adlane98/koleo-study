@@ -1,13 +1,12 @@
 import numpy as np
 import optuna
 import torch
-from torch import nn
+from torch.optim import Adam, RMSprop
 from torch.utils.data import DataLoader
-from torch.optim import Adam, RMSprop, SGD
-import torch.nn.functional as F
 from torchvision import models
 from tqdm import tqdm
 
+from model import VGG11Embedding
 from training_utils import (
     KoLeoLoss, build_triplets, create_datasets, 
     get_device, load_cifar10, print_metrics, 
@@ -24,20 +23,6 @@ train_dataset, val_dataset, val_triplets, val_labels = create_datasets(triplets,
 koleo_loss_fn = KoLeoLoss()
 
 EPOCHS = 15
-
-class VGG11Embedding(nn.Module):
-    def __init__(self, embedding_size, weights=None):
-        super(VGG11Embedding, self).__init__()
-        vgg = models.vgg11(weights=weights)
-        self.features = vgg.features
-        self.linear = nn.Linear(512, embedding_size)
-        
-    def forward(self, x):
-        x = self.features(x)
-        x = torch.flatten(x, 1)
-        x = self.linear(x)
-        x = F.normalize(x, p=2, dim=1)
-        return x
 
 def train_loop(model, grad_accum_steps, dataloader, optimizer, margin, koleo_weight, print_freq=100):
     model.train()

@@ -11,9 +11,10 @@ import optuna
 from sklearn.decomposition import PCA
 import torch
 from torch.utils.data import DataLoader
-from torchvision.models import VGG11_Weights, vgg11
+from torchvision.models import VGG11_Weights
 
-
+from koleo_loss import KoLeoLoss
+from model import VGG11Embedding
 from plot_utils import (
     compute_distance_matrix,
     get_ellipse_params_per_class,
@@ -21,7 +22,6 @@ from plot_utils import (
     plot_distance_matrix_heatmap,
     plot_embeddings_with_ellipses
 )
-from koleo_loss import KoLeoLoss
 from training_utils import (
     LABEL_NAMES,
     TRAIN_TRANSFORMS,
@@ -36,21 +36,6 @@ from training_utils import (
     TripletsCIFAR10Dataset,
     validation_loop
 )
-
-
-class VGG11Embedding(torch.nn.Module):
-    def __init__(self, embedding_size=128, weights=None):
-        super(VGG11Embedding, self).__init__()
-        vgg = vgg11(weights=weights)
-        self.features = vgg.features
-        self.linear = torch.nn.Linear(512, embedding_size)
-        
-    def forward(self, x):
-        x = self.features(x)
-        x = torch.flatten(x, 1)
-        x = self.linear(x)
-        x = torch.nn.functional.normalize(x, p=2, dim=1)
-        return x
 
 
 def train_loop(net, dataloader, optimizer, margin, device, koleo_weight=None, koleo_loss_fn=None, print_freq=100):
