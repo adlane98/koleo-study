@@ -2,6 +2,7 @@ matplotlib
 numpy
 optuna
 pandas
+Pillow
 plotly
 pyyaml
 scikit-learn
